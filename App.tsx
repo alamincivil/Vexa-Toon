@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Character, 
@@ -692,7 +691,7 @@ ${beatsTimeline}`;
                 </div>
               </div>
             )}
-          </div>
+          </section>
         )}
       </main>
 
