@@ -19,8 +19,6 @@ const mapToGeminiModel = (platform: PlatformType, modelName: string): string => 
 
 /**
  * Node 6: API TEST ENGINE (CRITICAL)
- * Performs a minimal handshake to validate the API key and check latency.
- * Test Prompt: "Respond with the word OK only."
  */
 export const testApiEngine = async (platform: PlatformType, apiKeyOverride?: string): Promise<{ success: boolean; latency: number; message: string }> => {
   const key = apiKeyOverride || process.env.API_KEY;
@@ -42,10 +40,8 @@ export const testApiEngine = async (platform: PlatformType, apiKeyOverride?: str
     const end = performance.now();
     const latency = Math.round(end - start);
     
-    // Access .text property directly as per @google/genai guidelines
     const text = response.text?.trim() || "";
     
-    // Node 6 Rule: Success if response contains "OK" and HTTP 200 (implied by no error)
     if (text.toUpperCase().includes("OK")) {
       return { 
         success: true, 
@@ -59,7 +55,6 @@ export const testApiEngine = async (platform: PlatformType, apiKeyOverride?: str
     const latency = Math.round(end - start);
     let errorMsg = error?.message || "NETWORK FAILURE: Connection refused or timed out.";
     
-    // Human-friendly error mapping
     if (errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("invalid api key")) {
       errorMsg = "AUTH ERROR: The provided API key is rejected by the platform authority.";
     } else if (errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("429")) {
@@ -76,11 +71,14 @@ export const testApiEngine = async (platform: PlatformType, apiKeyOverride?: str
   }
 };
 
+/**
+ * Robust retry logic with exponential backoff and descriptive error mapping.
+ */
 async function withRetry<T>(
   fn: () => Promise<T>, 
-  onRetry?: (attempt: number, delay: number) => void,
-  maxRetries = 4, 
-  baseDelay = 2000
+  onRetry?: (attempt: number, delay: number, reason: string) => void,
+  maxRetries = 5, 
+  baseDelay = 3000
 ): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -90,12 +88,20 @@ async function withRetry<T>(
       lastError = error;
       const status = error?.status || error?.error?.status;
       const code = error?.code || error?.error?.code;
+      const message = error?.message?.toLowerCase() || "";
       
-      const isTransient = status === "UNAVAILABLE" || code === 503 || status === "RESOURCE_EXHAUSTED" || code === 429;
+      // Determine if error is transient
+      const isRateLimit = status === "RESOURCE_EXHAUSTED" || code === 429 || message.includes("rate limit") || message.includes("quota");
+      const isServerBusy = status === "UNAVAILABLE" || status === "INTERNAL" || code === 503 || code === 500 || message.includes("overloaded");
+      const isTimeout = status === "DEADLINE_EXCEEDED" || code === 504 || message.includes("timeout");
+
+      const isTransient = isRateLimit || isServerBusy || isTimeout;
       
       if (isTransient && attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        if (onRetry) onRetry(attempt + 1, delay);
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000; // Exponential backoff + jitter
+        const reason = isRateLimit ? "Engine Rate Limit" : isServerBusy ? "Server Bottleneck" : "Sequence Timeout";
+        
+        if (onRetry) onRetry(attempt + 1, Math.round(delay), reason);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -107,7 +113,6 @@ async function withRetry<T>(
 
 /**
  * Node 11: PLATFORM ADAPTERS
- * Pure request -> response logic.
  */
 export const generateSingleScenePrompt = async (
   ai: any,
@@ -212,7 +217,6 @@ export const generateSingleScenePrompt = async (
 
 /**
  * Node 10: BYOAK ROUTER NODE (MANDATORY)
- * All generation calls go through this node.
  */
 export const generateScenePrompts = async (
   state: GenerationState, 
@@ -229,8 +233,12 @@ export const generateScenePrompts = async (
     try {
       const scene = await withRetry<ScenePrompt>(
         () => generateSingleScenePrompt(ai, state, i, emotion),
-        (attempt, delay) => {
-          if (onProgress) onProgress(i, state.sceneCount, `Retrying Node ${i+1}... (Wait ${delay/1000}s)`);
+        (attempt, delay, reason) => {
+          if (onProgress) onProgress(
+            i, 
+            state.sceneCount, 
+            `RECOVERY: ${reason}. Attempt ${attempt} (Waiting ${Math.round(delay/1000)}s)...`
+          );
         }
       );
       results.push(scene);

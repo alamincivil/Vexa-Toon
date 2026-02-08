@@ -69,30 +69,25 @@ const App: React.FC = () => {
 
   /**
    * Node 4: VALIDATION NODE
-   * Refactored to allow hyphens and underscores (OpenAI sk-proj- keys).
    */
   const validateApiKey = (p: PlatformType, key: string): { status: ApiStatus; error?: string } => {
     const trimmedKey = key.trim();
     if (!trimmedKey) return { status: 'UNSET' };
 
-    // Standard API keys often include hyphens and underscores
     const commonPattern = /^[a-zA-Z0-9\-_]{20,}$/;
 
     switch (p) {
       case 'OpenAI':
-        // OpenAI keys can start with sk- or sk-proj- and include hyphens
         if (!/^sk-[a-zA-Z0-9\-_]{15,}$/.test(trimmedKey)) {
           return { status: 'INVALID', error: "OPENAI KEYS MUST START WITH 'SK-' AND MAY CONTAIN HYPHENS." };
         }
         break;
       case 'DeepSeek':
-        // DeepSeek keys are typically long strings and may contain hyphens/underscores
         if (!commonPattern.test(trimmedKey)) {
           return { status: 'INVALID', error: "DEEPSEEK KEYS MUST BE AT LEAST 20 CHARACTERS." };
         }
         break;
       case 'Gemini':
-        // Gemini keys are standard length strings
         if (trimmedKey.length < 20) {
           return { status: 'INVALID', error: "GEMINI KEYS MUST BE AT LEAST 20 CHARACTERS." };
         }
@@ -128,7 +123,6 @@ const App: React.FC = () => {
 
   /**
    * Node 6: API TEST ENGINE
-   * Triggered manually. Measures latency and validates with "OK" prompt.
    */
   const handleTestConnection = async () => {
     if (currentConfig.status === 'INVALID' || currentConfig.status === 'UNSET' || !currentConfig.apiKey) return;
@@ -171,7 +165,6 @@ const App: React.FC = () => {
     const actionAssembled = s.actionBeats.map(b => `${b.timeRange} ${b.action}`).join('; ');
     const beatsTimeline = s.actionBeats.map(b => `${b.timeRange}\n${b.action}`).join('\n');
 
-    // Camera Grammar Node formatting
     const cameraBlock = `Camera:\n${s.camera.shotType} shot, ${s.camera.movement}, ${s.camera.angle} angle.\nClassic 2D camera behavior.`;
 
     return `SCENE ${s.sceneNumber}: 
@@ -232,7 +225,7 @@ ${beatsTimeline}`;
         apiKey: activeConfig.apiKey,
         modelName: activeConfig.modelName,
         optionalParams: activeConfig.optionalParams,
-        cameraGrammar // New state passed to generator
+        cameraGrammar
       };
 
       const prompts = await generateScenePrompts(state, (current, total, message) => {
@@ -248,26 +241,26 @@ ${beatsTimeline}`;
     }
   };
 
-  const downloadFile = (content: string, ext: string, mime: string) => {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${videoTitle.replace(/\s+/g, '_') || 'Vexa_Export'}.${ext}`;
-    a.click();
-  };
-
   const exportData = (type: 'JSON' | 'TXT' | 'CSV') => {
     const exportScenes = results.filter(s => selectedScenes.has(s.sceneNumber));
+    const download = (content: string, ext: string, mime: string) => {
+        const blob = new Blob([content], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${videoTitle.replace(/\s+/g, '_') || 'Vexa_Export'}.${ext}`;
+        a.click();
+    };
+
     if (type === 'JSON') {
-      downloadFile(JSON.stringify(exportScenes.map(s => ({ ...s, masterPrompt: assembleMasterPrompt(s) })), null, 2), 'json', 'application/json');
+      download(JSON.stringify(exportScenes.map(s => ({ ...s, masterPrompt: assembleMasterPrompt(s) })), null, 2), 'json', 'application/json');
     } else if (type === 'TXT') {
       const txt = exportScenes.map(s => assembleMasterPrompt(s)).join('\n\n' + '-'.repeat(40) + '\n\n');
-      downloadFile(txt, 'txt', 'text/plain');
+      download(txt, 'txt', 'text/plain');
     } else if (type === 'CSV') {
       const header = "Scene,Duration,Tone,Script\n";
       const rows = exportScenes.map(s => `${s.sceneNumber},${s.metadata.duration},${s.metadata.tone},"${s.setup.replace(/"/g, '""')}"`).join('\n');
-      downloadFile(header + rows, 'csv', 'text/csv');
+      download(header + rows, 'csv', 'text/csv');
     }
   };
 
@@ -475,7 +468,6 @@ ${beatsTimeline}`;
                   </div>
                 </div>
 
-                {/* Camera Grammar Node UI */}
                 <div className="bg-gray-950/50 p-10 rounded-[3rem] border border-gray-800/60 space-y-8">
                   <div className="flex items-center justify-between border-b border-gray-800/50 pb-6">
                     <h3 className="text-[11px] font-black text-gray-600 uppercase tracking-widest flex items-center gap-3">
@@ -593,7 +585,8 @@ ${beatsTimeline}`;
               <div className="bg-blue-600/5 border border-blue-500/10 p-24 rounded-[4rem] text-center backdrop-blur-sm animate-pulse">
                 <div className="w-24 h-24 border-4 border-t-blue-500 border-blue-500/10 rounded-full animate-spin mx-auto mb-10 shadow-2xl shadow-blue-500/20"></div>
                 <h3 className="text-3xl font-black uppercase italic tracking-tighter mb-4 text-white">ASSEMBLING NODE {progress.current + 1} OF {progress.total}</h3>
-                <p className="text-[12px] font-black uppercase tracking-[0.4em] text-blue-500">{statusMessage}</p>
+                <p className="text-[12px] font-black uppercase tracking-[0.4em] text-blue-500 animate-bounce">{statusMessage}</p>
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mt-6">Please do not refresh. Pipeline is auto-recovering from bottlenecks.</p>
               </div>
             )}
 
