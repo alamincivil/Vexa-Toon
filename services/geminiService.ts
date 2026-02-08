@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { ScenePrompt, PlatformType, GenerationState } from "../types";
 
 /**
@@ -18,12 +18,14 @@ const mapToGeminiModel = (platform: PlatformType, modelName: string): string => 
 };
 
 /**
+ * Node 6: API TEST ENGINE (CRITICAL)
  * Performs a minimal handshake to validate the API key and check latency.
+ * Test Prompt: "Respond with the word OK only."
  */
-export const testConnection = async (apiKeyOverride?: string): Promise<{ success: boolean; latency: number; message: string }> => {
+export const testApiEngine = async (platform: PlatformType, apiKeyOverride?: string): Promise<{ success: boolean; latency: number; message: string }> => {
   const key = apiKeyOverride || process.env.API_KEY;
   if (!key) {
-    return { success: false, latency: 0, message: "No authority key detected in sequence." };
+    return { success: false, latency: 0, message: "CRITICAL: No authority key detected in sequence logic." };
   }
 
   const ai = new GoogleGenAI({ apiKey: key });
@@ -31,23 +33,45 @@ export const testConnection = async (apiKeyOverride?: string): Promise<{ success
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: 'Ping',
-      config: { maxOutputTokens: 1 }
+      contents: 'Respond with the word OK only.',
+      config: { 
+        maxOutputTokens: 5,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     });
     const end = performance.now();
-    if (response.text) {
+    const latency = Math.round(end - start);
+    
+    // Access .text property directly as per @google/genai guidelines
+    const text = response.text?.trim() || "";
+    
+    // Node 6 Rule: Success if response contains "OK" and HTTP 200 (implied by no error)
+    if (text.toUpperCase().includes("OK")) {
       return { 
         success: true, 
-        latency: Math.round(end - start), 
-        message: "Handshake successful. Engine ready." 
+        latency, 
+        message: `AUTHORIZATION SUCCESS: Handshake verified in ${latency}ms. Engine status: OPTIMAL.` 
       };
     }
-    throw new Error("Empty response from Engine.");
+    throw new Error(`VALIDATION FAILURE: Unexpected engine output sequence: "${text || 'NULL'}". Check model availability.`);
   } catch (error: any) {
+    const end = performance.now();
+    const latency = Math.round(end - start);
+    let errorMsg = error?.message || "NETWORK FAILURE: Connection refused or timed out.";
+    
+    // Human-friendly error mapping
+    if (errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("invalid api key")) {
+      errorMsg = "AUTH ERROR: The provided API key is rejected by the platform authority.";
+    } else if (errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("429")) {
+      errorMsg = "QUOTA ERROR: Rate limit exceeded. Please wait before re-testing.";
+    } else if (errorMsg.includes("PERMISSION_DENIED")) {
+      errorMsg = "PERMISSION ERROR: Key exists but lacks access to the required model family.";
+    }
+
     return { 
       success: false, 
-      latency: 0, 
-      message: error?.message || "Connection refused. Validate project permissions." 
+      latency, 
+      message: `${errorMsg} (Measured Latency: ${latency}ms)`
     };
   }
 };
@@ -81,6 +105,10 @@ async function withRetry<T>(
   throw lastError;
 }
 
+/**
+ * Node 11: PLATFORM ADAPTERS
+ * Pure request -> response logic.
+ */
 export const generateSingleScenePrompt = async (
   ai: any,
   state: GenerationState,
@@ -98,7 +126,12 @@ export const generateSingleScenePrompt = async (
     PIPELINE PROTOCOLS:
     1. STYLE LOCK: 2D hand-drawn, thick black outlines (4-5px), watercolor backgrounds, vibrant but flat character colors.
     2. PHYSICS: 150% Squash & Stretch. Rubber-hose limbs. Impact holds.
-    3. CAMERA: Dynamic but classic.
+    3. CAMERA GRAMMAR NODE:
+       - You MUST specify Shot Type, Camera Motion, and Angle.
+       - User Preference Grammar: ${state.cameraGrammar.shotType} shot, ${state.cameraGrammar.movement}, ${state.cameraGrammar.angle} angle.
+       - Logic Constraint: Use 'Tracking' ONLY if the action involves significant character movement.
+       - Logic Constraint: Use 'Zoom' ONLY for sudden impact frames or high emotional peaks.
+       - Style: Emulate classic 2D multiplane camera behavior.
     4. LOCALIZATION: ${state.isLocalized ? "Bangladeshi Village Context: Use local items like lungis, rickshaws, village paths, and palm trees." : "Standard Suburban American Context."}
     
     CAST DATA:
@@ -177,6 +210,10 @@ export const generateSingleScenePrompt = async (
   return JSON.parse(response.text.trim());
 };
 
+/**
+ * Node 10: BYOAK ROUTER NODE (MANDATORY)
+ * All generation calls go through this node.
+ */
 export const generateScenePrompts = async (
   state: GenerationState, 
   onProgress?: (current: number, total: number, message?: string) => void
@@ -190,7 +227,7 @@ export const generateScenePrompts = async (
     if (onProgress) onProgress(i, state.sceneCount, `Initializing Assembly Node ${i + 1}...`);
     
     try {
-      const scene = await withRetry(
+      const scene = await withRetry<ScenePrompt>(
         () => generateSingleScenePrompt(ai, state, i, emotion),
         (attempt, delay) => {
           if (onProgress) onProgress(i, state.sceneCount, `Retrying Node ${i+1}... (Wait ${delay/1000}s)`);

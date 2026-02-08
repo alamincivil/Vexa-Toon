@@ -1,6 +1,9 @@
 
 export type PlatformType = 'Gemini' | 'OpenAI' | 'DeepSeek';
 
+// Added ApiStatus type to resolve the export error in App.tsx
+export type ApiStatus = 'UNSET' | 'SAVED_UNTESTED' | 'TESTING' | 'HEALTHY' | 'FAILED' | 'INVALID';
+
 export interface OptionalParams {
   temperature: number;
   maxTokens: number;
@@ -17,6 +20,10 @@ export interface ApiConfig {
   platformType: PlatformType;
   modelName: string;
   optionalParams: OptionalParams;
+  // Added properties required by App.tsx state management
+  status: ApiStatus;
+  latency?: number;
+  message?: string;
 }
 
 export interface Character {
@@ -31,6 +38,12 @@ export interface Character {
 export interface ActionBeat {
   timeRange: string;
   action: string;
+}
+
+export interface CameraGrammar {
+  shotType: string;
+  movement: string;
+  angle: string;
 }
 
 export interface ScenePrompt {
@@ -71,6 +84,7 @@ export interface AppState {
   sceneDuration: number;
   apiConfigs: Record<PlatformType, ApiConfig | null>;
   currentPlatform: PlatformType;
+  cameraGrammar: CameraGrammar;
 }
 
 export interface GenerationState extends AppState {
