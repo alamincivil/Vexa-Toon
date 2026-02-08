@@ -2,7 +2,62 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ScenePrompt, PlatformType, GenerationState } from "../types";
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
+/**
+ * Maps external platform model names to the most appropriate Gemini model.
+ */
+const mapToGeminiModel = (platform: PlatformType, modelName: string): string => {
+  if (platform === 'Gemini') return modelName;
+  
+  const mapping: Record<string, string> = {
+    'gpt-4o': 'gemini-3-pro-preview',
+    'gpt-4-turbo': 'gemini-3-pro-preview',
+    'deepseek-chat': 'gemini-3-flash-preview'
+  };
+
+  return mapping[modelName] || 'gemini-3-flash-preview';
+};
+
+/**
+ * Performs a minimal handshake to validate the API key and check latency.
+ */
+export const testConnection = async (apiKeyOverride?: string): Promise<{ success: boolean; latency: number; message: string }> => {
+  const key = apiKeyOverride || process.env.API_KEY;
+  if (!key) {
+    return { success: false, latency: 0, message: "No authority key detected in sequence." };
+  }
+
+  const ai = new GoogleGenAI({ apiKey: key });
+  const start = performance.now();
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: 'Ping',
+      config: { maxOutputTokens: 1 }
+    });
+    const end = performance.now();
+    if (response.text) {
+      return { 
+        success: true, 
+        latency: Math.round(end - start), 
+        message: "Handshake successful. Engine ready." 
+      };
+    }
+    throw new Error("Empty response from Engine.");
+  } catch (error: any) {
+    return { 
+      success: false, 
+      latency: 0, 
+      message: error?.message || "Connection refused. Validate project permissions." 
+    };
+  }
+};
+
+async function withRetry<T>(
+  fn: () => Promise<T>, 
+  onRetry?: (attempt: number, delay: number) => void,
+  maxRetries = 4, 
+  baseDelay = 2000
+): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -11,8 +66,12 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 10
       lastError = error;
       const status = error?.status || error?.error?.status;
       const code = error?.code || error?.error?.code;
-      if (status === "UNAVAILABLE" || code === 503 || status === "RESOURCE_EXHAUSTED" || code === 429) {
+      
+      const isTransient = status === "UNAVAILABLE" || code === 503 || status === "RESOURCE_EXHAUSTED" || code === 429;
+      
+      if (isTransient && attempt < maxRetries - 1) {
         const delay = baseDelay * Math.pow(2, attempt);
+        if (onRetry) onRetry(attempt + 1, delay);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -22,52 +81,35 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 10
   throw lastError;
 }
 
-export const testConnection = async (apiKey: string, platformType: PlatformType, modelName: string): Promise<{ success: boolean; message: string }> => {
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    await ai.models.generateContent({
-      model: modelName || "gemini-3-flash-preview",
-      contents: "ping",
-      config: { maxOutputTokens: 1 }
-    });
-    return { success: true, message: "Node handshake successful." };
-  } catch (error: any) {
-    return { success: false, message: error?.message || "Connection refused." };
-  }
-};
-
 export const generateSingleScenePrompt = async (
   ai: any,
   state: GenerationState,
   sceneIndex: number,
   emotion: string
 ): Promise<ScenePrompt> => {
+  const model = mapToGeminiModel(state.currentPlatform, state.modelName);
+  const { topP, topK, temperature } = state.optionalParams;
+
   const systemInstruction = `
-    You are the "2D Animation Assembly Node". Your task is to generate a multi-scene prompt following the strictly defined 12-node pipeline.
-
-    NODE 1: Metadata - SCENE ${sceneIndex + 1}, Duration ${state.sceneDuration}s, Tone: ${emotion}.
-    NODE 2: Style Lock - Classic 1940s–1960s hand-drawn 2D cartoon, thick black outlines (4-5px), flat colors, watercolor backgrounds. NO 3D.
-    NODE 3: Camera Grammar - Must specify Shot Type, Movement, and Angle.
-    NODE 4: Action Beats - Timeline of action (Verb + Subject) summing to ${state.sceneDuration}s.
-    NODE 5: Character Node - Use the provided cast with specific colors and 4-5px outlines.
-    NODE 6: Spatial Lock - Assign depth (Foreground/Midground/Background) to all characters.
-    NODE 7: Background Node - Watercolor painted, localized if enabled (${state.isLocalized ? "Bangladeshi Village" : "US Suburban"}).
-    NODE 8: Physics Node - Enforce 140-180% Squash & Stretch, 2-frame impact holds, rubber-hose limbs.
-    NODE 9: Sync Node - Dialogue or sound cues (Bangla if localized) synced to beats.
-    NODE 10: Mood Node - Emotional clarity scaling with intensity.
-    NODE 11: Negative Guard - Hard block on 3D, gradients, realistic textures.
-    NODE 12: Assembly - Merge all nodes into a coherent prompt string.
-
+    You are the "Vexa Toon Master Assembly Node". Your task is to generate a professional 2D cartoon animation prompt.
+    Current Engine Emulation: ${state.currentPlatform} (${state.modelName})
+    Target Style: Classic 1940s–1960s hand-drawn 2D animation (Tom & Jerry style).
+    
+    PIPELINE PROTOCOLS:
+    1. STYLE LOCK: 2D hand-drawn, thick black outlines (4-5px), watercolor backgrounds, vibrant but flat character colors.
+    2. PHYSICS: 150% Squash & Stretch. Rubber-hose limbs. Impact holds.
+    3. CAMERA: Dynamic but classic.
+    4. LOCALIZATION: ${state.isLocalized ? "Bangladeshi Village Context: Use local items like lungis, rickshaws, village paths, and palm trees." : "Standard Suburban American Context."}
+    
     CAST DATA:
-    ${state.characters.map(c => `- ${c.name}: ${c.role}, color ${c.color}, ${c.outline}px outline.`).join('\n')}
+    ${state.characters.map(c => `- ${c.name}: ${c.role}, color ${c.color}, traits: ${c.traits}`).join('\n')}
 
-    LOCALIZATION: ${state.isLocalized ? "Bangladeshi village setting enabled." : "Standard T&J setting."}
+    Output must be valid JSON matching the requested schema.
   `;
 
-  const userPrompt = `Generate SCENE ${sceneIndex + 1} for video "${state.videoTitle}". Mood: ${emotion}.`;
-
-  const model = state.modelName || "gemini-3-flash-preview";
-  const { topP, topK, temperature } = state.optionalParams;
+  const userPrompt = `Generate SCENE ${sceneIndex + 1} of ${state.sceneCount} for "${state.videoTitle}". 
+    Scene Duration: ${state.sceneDuration}s. 
+    Mood: ${emotion}.`;
 
   const response = await ai.models.generateContent({
     model,
@@ -123,7 +165,7 @@ export const generateSingleScenePrompt = async (
           textAudioSync: { type: Type.STRING },
           mood: { type: Type.STRING },
           avoidRules: { type: Type.STRING },
-          setup: { type: Type.STRING, description: "The full assembled prompt block." },
+          setup: { type: Type.STRING },
           finalCheck: { type: Type.STRING }
         },
         required: ["sceneNumber", "metadata", "styleLock", "camera", "actionBeats", "characters", "spatialRules", "background", "physics", "textAudioSync", "mood", "avoidRules", "setup", "finalCheck"]
@@ -132,37 +174,49 @@ export const generateSingleScenePrompt = async (
   });
 
   if (!response.text) throw new Error("Null generation response.");
-  return JSON.parse(response.text);
+  return JSON.parse(response.text.trim());
 };
 
-export const generateScenePrompts = async (state: GenerationState, onProgress?: (current: number, total: number) => void): Promise<ScenePrompt[]> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+export const generateScenePrompts = async (
+  state: GenerationState, 
+  onProgress?: (current: number, total: number, message?: string) => void
+): Promise<ScenePrompt[]> => {
+  const keyToUse = state.apiKey || process.env.API_KEY;
+  const ai = new GoogleGenAI({ apiKey: keyToUse });
   const results: ScenePrompt[] = [];
+  
   for (let i = 0; i < state.sceneCount; i++) {
     const emotion = state.emotions[i] || "Playful";
+    if (onProgress) onProgress(i, state.sceneCount, `Initializing Assembly Node ${i + 1}...`);
+    
     try {
-      const scene = await withRetry(() => generateSingleScenePrompt(ai, state, i, emotion));
+      const scene = await withRetry(
+        () => generateSingleScenePrompt(ai, state, i, emotion),
+        (attempt, delay) => {
+          if (onProgress) onProgress(i, state.sceneCount, `Retrying Node ${i+1}... (Wait ${delay/1000}s)`);
+        }
+      );
       results.push(scene);
     } catch (e) {
-      console.error(e);
+      console.error("Pipeline failure at node " + (i+1), e);
       results.push({
         sceneNumber: i + 1,
-        metadata: { duration: state.sceneDuration, tone: emotion, localization: state.isLocalized ? "Bangladeshi" : "Standard" },
-        styleLock: "Classic 2D hand-drawn, thick black outlines.",
+        metadata: { duration: state.sceneDuration, tone: emotion, localization: "Standard" },
+        styleLock: "Classic 2D animation, thick black outlines.",
         camera: { shotType: "Medium", movement: "Static", angle: "Eye-level" },
-        actionBeats: [{ timeRange: "0-8s", action: "Characters interacting in slapstick fashion." }],
-        characters: "Cast with thick black outlines.",
-        spatialRules: "Characters in midground.",
-        background: "Watercolor environment.",
-        physics: { squashStretch: "160%", elasticity: "High", impactHold: "2 frames" },
-        textAudioSync: "Classic cartoon sounds.",
+        actionBeats: [{ timeRange: `0-${state.sceneDuration}s`, action: "Slapstick interaction between characters." }],
+        characters: "Main cast interacting.",
+        spatialRules: "Midground placement.",
+        background: "Classic watercolor background.",
+        physics: { squashStretch: "150%", elasticity: "High", impactHold: "2 frames" },
+        textAudioSync: "Synced sound effects.",
         mood: emotion,
-        avoidRules: "No 3D.",
-        setup: `FALLBACK: Classic 2D hand-drawn animation for ${state.videoTitle} with ${emotion} mood.`,
-        finalCheck: "FALLBACK: Protocol maintained."
+        avoidRules: "No 3D, no gradients.",
+        setup: `FALLBACK: 2D animation sequence of ${state.videoTitle} with ${emotion} tone.`,
+        finalCheck: "Pipeline Error Recovered."
       });
     }
-    if (onProgress) onProgress(i + 1, state.sceneCount);
+    if (onProgress) onProgress(i + 1, state.sceneCount, `Node ${i + 1} Assembled.`);
   }
   return results;
 };
